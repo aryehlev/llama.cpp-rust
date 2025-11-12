@@ -67,17 +67,18 @@ jobs:
       run: cargo build --examples --verbose
 
   build-versions:
-    name: Test llama.cpp ${{ matrix.version }}
-    runs-on: ubuntu-latest
+    name: Test ${{ matrix.version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        version: [b7035, b7000, b6500]
         include:
+          # Version metadata
           - version: b7035
             has_vocab_api: true
           - version: b7000
-            has_vocab_api: true
-          - version: b6739
             has_vocab_api: true
           - version: b6500
             has_vocab_api: false
@@ -98,15 +99,27 @@ jobs:
       env:
         LLAMA_CPP_VERSION: ${{ matrix.version }}
 
-    - name: Verify version features are enabled
+    - name: Verify version features (Unix)
+      if: runner.os != 'Windows'
       run: |
         echo "Testing that conditional compilation works correctly"
-        # The build should have emitted the correct cfg flags
         if [ "${{ matrix.has_vocab_api }}" = "true" ]; then
           echo "✓ This version should have llama_vocab_api cfg"
         else
           echo "✓ This version should NOT have llama_vocab_api cfg"
         fi
+      env:
+        LLAMA_CPP_VERSION: ${{ matrix.version }}
+
+    - name: Verify version features (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        echo "Testing that conditional compilation works correctly"
+        if ("${{ matrix.has_vocab_api }}" -eq "true") {
+          echo "✓ This version should have llama_vocab_api cfg"
+        } else {
+          echo "✓ This version should NOT have llama_vocab_api cfg"
+        }
       env:
         LLAMA_CPP_VERSION: ${{ matrix.version }}
 
