@@ -250,7 +250,7 @@ fn download_and_extract_binary(
 
         // Check if this is a library file we need
         let is_target = if os == "windows" {
-            file_name.ends_with(".dll")
+            file_name.ends_with(".dll") || file_name.ends_with(".lib")
         } else if os == "macos" {
             file_name.ends_with(".dylib")
         } else {
