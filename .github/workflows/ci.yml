@@ -73,15 +73,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        version: [b7035, b7000, b6500]
+        version: [b7035, b7030, b6927]
         include:
           # Version metadata
           - version: b7035
             has_vocab_api: true
-          - version: b7000
+          - version: b7030
             has_vocab_api: true
-          - version: b6500
-            has_vocab_api: false
+          - version: b6927
+            has_vocab_api: true
 
     steps:
     - uses: actions/checkout@v4

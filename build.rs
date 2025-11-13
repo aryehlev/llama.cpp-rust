@@ -200,12 +200,9 @@ fn download_and_extract_binary(
             format!("llama-{}-bin-ubuntu-x64.zip", version),
             "libllama.so",
         ),
-        ("ubuntu", "aarch64") => (
-            format!("llama-{}-bin-ubuntu-arm64.zip", version),
-            "libllama.so",
-        ),
-        ("windows", "x86_64") => (format!("llama-{}-bin-win-x64.zip", version), "llama.dll"),
-        _ => panic!("Unsupported platform: {} {}", os, arch),
+        ("windows", "x86_64") => (format!("llama-{}-bin-win-cpu-x64.zip", version), "llama.dll"),
+        ("windows", "aarch64") => (format!("llama-{}-bin-win-cpu-arm64.zip", version), "llama.dll"),
+        _ => panic!("Unsupported platform combination: {} {}. Only x86_64 ubuntu/macos/windows and aarch64 macos/windows are supported.", os, arch),
     };
 
     // Check if library already exists
