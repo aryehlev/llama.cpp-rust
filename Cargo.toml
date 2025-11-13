@@ -1,0 +1,30 @@
+[package]
+name = "llama-cpp-rust"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "Rust bindings for llama.cpp with dynamic linking and automatic binary downloads"
+license = "MIT"
+repository = "https://github.com/yourusername/llama.cpp-rust"
+keywords = ["llm", "llama", "inference", "ai", "machine-learning"]
+categories = ["science", "api-bindings"]
+readme = "README.md"
+
+[package.metadata.llama-cpp]
+# Default llama.cpp version
+default_version = "b7035"
+# Minimum supported version
+min_version = "b5000"
+# Tested versions
+tested_versions = ["b7035", "b7000", "b6739", "b6000"]
+
+[dependencies]
+once_cell = "1.20"
+
+[build-dependencies]
+bindgen = "0.72.0"
+ureq = "2.0"
+zip = "2.2"
+
+[features]
+default = []
