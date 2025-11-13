@@ -43,6 +43,7 @@ static BACKEND: Lazy<Mutex<Option<Arc<BackendGuard>>>> = Lazy::new(|| Mutex::new
 pub struct LlamaModel {
     model: *mut sys::llama_model,
     _backend: Arc<BackendGuard>,
+    _marker: std::marker::PhantomData<*mut ()>,
 }
 
 impl LlamaModel {
@@ -92,20 +93,15 @@ impl LlamaModel {
         Ok(LlamaModel {
             model,
             _backend: backend,
+            _marker: std::marker::PhantomData,
         })
     }
 
     /// Get the number of vocabulary tokens
     pub fn n_vocab(&self) -> i32 {
-        #[cfg(llama_vocab_api)]
-        {
-            let vocab = unsafe { sys::llama_model_get_vocab(self.model) };
-            unsafe { sys::llama_n_vocab(vocab) }
-        }
-
-        #[cfg(not(llama_vocab_api))]
-        {
-            unsafe { sys::llama_n_vocab(self.model) }
+        unsafe {
+            let vocab = sys::llama_model_get_vocab(self.model);
+            sys::llama_n_vocab(vocab)
         }
     }
 
@@ -140,6 +136,8 @@ impl Drop for LlamaModel {
 
 // NOTE: LlamaModel is NOT thread-safe. The underlying llama.cpp C API
 // is not designed for concurrent access from multiple threads.
+// The PhantomData<*mut ()> marker ensures the type is !Send and !Sync,
+// preventing accidental sharing across threads.
 // If you need to use a model from multiple threads, wrap it in Arc<Mutex<LlamaModel>>
 // or use separate model instances per thread.
 
@@ -200,20 +198,54 @@ impl Default for ModelParams {
     }
 }
 
-/// A llama.cpp context for inference
-pub struct LlamaContext {
-    ctx: *mut sys::llama_context,
-    model: *mut sys::llama_model,
+/// RAII guard for llama_batch that ensures proper cleanup
+struct BatchGuard {
+    batch: sys::llama_batch,
 }
 
-impl LlamaContext {
+impl BatchGuard {
+    fn new(n_tokens: i32, embd: i32, n_seq_max: i32) -> Self {
+        BatchGuard {
+            batch: unsafe { sys::llama_batch_init(n_tokens, embd, n_seq_max) },
+        }
+    }
+}
+
+impl std::ops::Deref for BatchGuard {
+    type Target = sys::llama_batch;
+
+    fn deref(&self) -> &Self::Target {
+        &self.batch
+    }
+}
+
+impl std::ops::DerefMut for BatchGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.batch
+    }
+}
+
+impl Drop for BatchGuard {
+    fn drop(&mut self) {
+        unsafe { sys::llama_batch_free(self.batch) };
+    }
+}
+
+/// A llama.cpp context for inference
+pub struct LlamaContext<'model> {
+    ctx: *mut sys::llama_context,
+    model: *mut sys::llama_model,
+    _marker: std::marker::PhantomData<&'model LlamaModel>,
+}
+
+impl<'model> LlamaContext<'model> {
     /// Create a new context from a model
     ///
     /// # Arguments
     ///
     /// * `model` - The model to create context for
     /// * `params` - Context parameters (use `ContextParams::default()` for defaults)
-    pub fn new(model: &LlamaModel, params: ContextParams) -> LlamaResult<Self> {
+    pub fn new(model: &'model LlamaModel, params: ContextParams) -> LlamaResult<Self> {
         let ctx = unsafe { sys::llama_new_context_with_model(model.model, params.inner) };
 
         let ctx = LlamaError::check_null(ctx, "llama_new_context_with_model")?;
@@ -221,6 +253,7 @@ impl LlamaContext {
         Ok(LlamaContext {
             ctx,
             model: model.model,
+            _marker: std::marker::PhantomData,
         })
     }
 
@@ -242,24 +275,10 @@ impl LlamaContext {
 
         let mut tokens = vec![0i32; text.len() + 16]; // Allocate with extra space
 
-        #[cfg(llama_vocab_api)]
         let n_tokens = unsafe {
             let vocab = sys::llama_model_get_vocab(self.model);
             sys::llama_tokenize(
                 vocab,
-                text_c.as_ptr(),
-                text.len() as i32,
-                tokens.as_mut_ptr(),
-                tokens.len() as i32,
-                add_special,
-                parse_special,
-            )
-        };
-
-        #[cfg(not(llama_vocab_api))]
-        let n_tokens = unsafe {
-            sys::llama_tokenize(
-                self.model,
                 text_c.as_ptr(),
                 text.len() as i32,
                 tokens.as_mut_ptr(),
@@ -284,23 +303,10 @@ impl LlamaContext {
     pub fn token_to_piece(&self, token: i32) -> String {
         let mut buf = vec![0u8; 32];
 
-        #[cfg(llama_vocab_api)]
         let len = unsafe {
             let vocab = sys::llama_model_get_vocab(self.model);
             sys::llama_token_to_piece(
                 vocab,
-                token,
-                buf.as_mut_ptr() as *mut i8,
-                buf.len() as i32,
-                0,
-                true,
-            )
-        };
-
-        #[cfg(not(llama_vocab_api))]
-        let len = unsafe {
-            sys::llama_token_to_piece(
-                self.model,
                 token,
                 buf.as_mut_ptr() as *mut i8,
                 buf.len() as i32,
@@ -324,7 +330,7 @@ impl LlamaContext {
     /// * `tokens` - Tokens to decode
     /// * `n_past` - Number of tokens already processed
     pub fn decode(&mut self, tokens: &[i32], n_past: i32) -> LlamaResult<()> {
-        let mut batch = unsafe { sys::llama_batch_init(tokens.len() as i32, 0, 1) };
+        let mut batch = BatchGuard::new(tokens.len() as i32, 0, 1);
 
         batch.n_tokens = tokens.len() as i32;
 
@@ -338,9 +344,7 @@ impl LlamaContext {
             }
         }
 
-        let result = unsafe { sys::llama_decode(self.ctx, batch) };
-
-        unsafe { sys::llama_batch_free(batch) };
+        let result = unsafe { sys::llama_decode(self.ctx, *batch) };
 
         if result != 0 {
             return Err(LlamaError::InferenceError(format!(
@@ -354,14 +358,10 @@ impl LlamaContext {
 
     /// Get logits for the last token
     pub fn get_logits(&self) -> &[f32] {
-        #[cfg(llama_vocab_api)]
         let n_vocab = unsafe {
             let vocab = sys::llama_model_get_vocab(self.model);
             sys::llama_n_vocab(vocab)
         };
-
-        #[cfg(not(llama_vocab_api))]
-        let n_vocab = unsafe { sys::llama_n_vocab(self.model) };
 
         let logits_ptr = unsafe { sys::llama_get_logits_ith(self.ctx, -1) };
 
@@ -393,7 +393,7 @@ impl LlamaContext {
     }
 }
 
-impl Drop for LlamaContext {
+impl<'model> Drop for LlamaContext<'model> {
     fn drop(&mut self) {
         unsafe {
             sys::llama_free(self.ctx);
