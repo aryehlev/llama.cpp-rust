@@ -120,7 +120,25 @@ impl LlamaModel {
         let mut buf = vec![0u8; 128];
         let len =
             unsafe { sys::llama_model_desc(self.model, buf.as_mut_ptr() as *mut i8, buf.len()) };
-        buf.truncate(len as usize);
+
+        // Handle error case
+        if len < 0 {
+            return String::new();
+        }
+
+        // Handle buffer too small case
+        if len as usize > buf.len() {
+            // Buffer was too small, resize and retry
+            buf.resize(len as usize, 0);
+            let len = unsafe { sys::llama_model_desc(self.model, buf.as_mut_ptr() as *mut i8, buf.len()) };
+            if len < 0 {
+                return String::new();
+            }
+            buf.truncate(len as usize);
+        } else {
+            buf.truncate(len as usize);
+        }
+
         String::from_utf8_lossy(&buf).to_string()
     }
 }
@@ -315,11 +333,34 @@ impl<'model> LlamaContext<'model> {
             )
         };
 
+        // Handle error case
         if len < 0 {
             return String::new();
         }
 
-        buf.truncate(len as usize);
+        // Handle buffer too small case
+        if len as usize > buf.len() {
+            // Buffer was too small, resize and retry
+            buf.resize(len as usize, 0);
+            let len = unsafe {
+                let vocab = sys::llama_model_get_vocab(self.model);
+                sys::llama_token_to_piece(
+                    vocab,
+                    token,
+                    buf.as_mut_ptr() as *mut i8,
+                    buf.len() as i32,
+                    0,
+                    true,
+                )
+            };
+            if len < 0 {
+                return String::new();
+            }
+            buf.truncate(len as usize);
+        } else {
+            buf.truncate(len as usize);
+        }
+
         String::from_utf8_lossy(&buf).to_string()
     }
 

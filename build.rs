@@ -300,7 +300,134 @@ fn download_and_extract_binary(
         ));
     }
 
+    // On Windows, generate .lib import libraries from .dll files
+    #[cfg(target_os = "windows")]
+    {
+        if let Err(e) = generate_windows_import_libs(libs_dir) {
+            eprintln!("\n=======================================================================");
+            eprintln!("ERROR: Failed to generate Windows import libraries");
+            eprintln!("=======================================================================");
+            eprintln!("{}", e);
+            eprintln!("\nThis requires Windows SDK tools (dumpbin.exe and lib.exe).");
+            eprintln!("\nTo fix this, install one of:");
+            eprintln!("  1. Visual Studio (with C++ development tools)");
+            eprintln!("  2. Build Tools for Visual Studio");
+            eprintln!("     Download: https://visualstudio.microsoft.com/downloads/");
+            eprintln!("\nMake sure the tools are in your PATH, or run from a");
+            eprintln!("'Developer Command Prompt for VS' / 'x64 Native Tools Command Prompt'");
+            eprintln!("=======================================================================\n");
+            return Err(e);
+        }
+    }
+
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn generate_windows_import_libs(libs_dir: &Path) -> io::Result<()> {
+    use std::process::Command;
+
+    let dll_path = libs_dir.join("llama.dll");
+    let lib_path = libs_dir.join("llama.lib");
+    let def_path = libs_dir.join("llama.def");
+
+    if !dll_path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "llama.dll not found",
+        ));
+    }
+
+    // Skip if .lib already exists
+    if lib_path.exists() {
+        return Ok(());
+    }
+
+    println!("cargo:warning=Generating llama.lib import library from llama.dll");
+
+    // Step 1: Use dumpbin to get exports
+    let dumpbin_output = Command::new("dumpbin")
+        .args(&["/EXPORTS", dll_path.to_str().unwrap()])
+        .output();
+
+    match dumpbin_output {
+        Ok(output) if output.status.success() => {
+            // Step 2: Parse dumpbin output and create .def file
+            let exports_str = String::from_utf8_lossy(&output.stdout);
+            let mut exports = Vec::new();
+
+            let mut in_exports = false;
+            for line in exports_str.lines() {
+                if line.contains("ordinal hint") {
+                    in_exports = true;
+                    continue;
+                }
+                if in_exports {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 4 {
+                        exports.push(parts[3].to_string());
+                    }
+                }
+            }
+
+            if exports.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "No exports found in DLL",
+                ));
+            }
+
+            // Step 3: Write .def file
+            let mut def_content = String::from("EXPORTS\n");
+            for export in exports {
+                def_content.push_str(&format!("    {}\n", export));
+            }
+            fs::write(&def_path, def_content)?;
+
+            println!("cargo:warning=Created {}", def_path.display());
+
+            // Step 4: Use lib.exe to create import library
+            let lib_output = Command::new("lib")
+                .args(&[
+                    &format!("/DEF:{}", def_path.display()),
+                    &format!("/OUT:{}", lib_path.display()),
+                    "/MACHINE:X64",
+                ])
+                .current_dir(libs_dir)
+                .output();
+
+            match lib_output {
+                Ok(result) if result.status.success() => {
+                    println!("cargo:warning=Successfully generated {}", lib_path.display());
+                    // Clean up .def file
+                    let _ = fs::remove_file(&def_path);
+                    Ok(())
+                }
+                Ok(result) => {
+                    let stderr = String::from_utf8_lossy(&result.stderr);
+                    Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("lib.exe failed: {}", stderr),
+                    ))
+                }
+                Err(e) => Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("lib.exe not found: {}", e),
+                )),
+            }
+        }
+        Ok(result) => {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("dumpbin failed: {}", stderr),
+            ))
+        }
+        Err(e) => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("dumpbin not found: {}", e),
+        )),
+    }
 }
 
 fn configure_linking(libs_dir: &Path, os: &str) {
